@@ -24,7 +24,7 @@ function wget_hello_world () {
     --no-proxy
     'http://localhost:8080/'
     )
-  wget "${WGET_OPTS[@]}"
+  wget "${WGET_OPTS[@]}" | sed -ure 's!^!<wget> !;1s~^~\n~'
 
   kill -HUP "$NODE_PID"
   return 0

@@ -1,5 +1,5 @@
 var HTTPParser = process.binding("http_parser").HTTPParser;
-var Stream = require('stream').Stream;
+var streamLib = require('stream');
 var urlParse = require('url').parse;
 
 var STATUS_CODES = {
@@ -64,7 +64,43 @@ var defaults = {
   autoChunked: true,
   autoConnection: true,
 };
+
+
 function noop() { return; }
+
+var isFin = (Number.isFinite
+  || function isFinite(x) { return ((+x === x) && isFinite(x)); });
+
+function hasLen(x) { return (x && isFin(x.length)); }
+
+
+var hookKeys = (function detectHookKeys() {
+  var h = {};
+  function detectHookField(evt) {
+    var key = HTTPParser['kOn' + evt];
+    h[evt] = (Number.isFinite(key) ? key : 'on' + evt);
+  }
+  detectHookField('Body');
+  detectHookField('HeadersComplete');
+  detectHookField('MessageComplete');
+  return h;
+}());
+
+
+var makeReadableStream = (function guessHow() {
+  var ReadableStream = streamLib.Readable, Stream;
+  if (ReadableStream) {
+    return function makeReadableStream() { return new ReadableStream(); };
+  }
+  Stream = streamLib.Stream;
+  return function makeReadableStream() {
+    var s = new Stream();
+    s.readable = true;
+    return s;
+  };
+}());
+
+
 exports.socketHandler = function (app, options) {
   // Mix the options with the default config.
   var config = Object.create(defaults), debugLv = options.debug, clientNum = 0;
@@ -109,8 +145,7 @@ exports.socketHandler = function (app, options) {
           headers["Transfer-Encoding"] = "chunked";
           hasTransferEncoding = true;
           var originalBody = body;
-          body = new Stream();
-          body.readable = true;
+          body = makeReadableStream();
 
           originalBody.on("data", function (chunk) {
             if (Buffer.isBuffer(chunk)) {
@@ -172,10 +207,20 @@ exports.socketHandler = function (app, options) {
       return client.end();
     }
 
-    parser.onHeadersComplete = function (info) {
-      debugLog('header complete');
-      info.body = new Stream();
-      info.body.readable = true;
+    function recvHeaders(a1, a2, a3) {
+      // arguments are version-specific,
+      // compare function parserOnHeadersComplete
+      // in https://github.com/nodejs/node/blob/master/lib/_http_common.js
+      debugLog('header complete', arguments);
+      var info = a1, argLen = arguments.length;
+      if (argLen !== 1) {
+        if ((argLen > 3) && isFin(a1) && isFin(a2) && hasLen(a3)) {
+          // e.g. node commit a54972c uses
+          // (versionMajor, versionMinor, headers, method, …)
+          info = a3;
+        }
+      }
+      info.body = makeReadableStream();
       req = info;
       var rawHeaders = req.rawHeaders = req.headers;
       var headers = req.headers = {};
@@ -185,18 +230,20 @@ exports.socketHandler = function (app, options) {
       req.url = urlParse(req.url);
       app(req, res);
     }
+    parser[hookKeys.HeadersComplete] = recvHeaders;
 
-    parser.onBody = function (buf, start, len) {
+    parser[hookKeys.Body] = function (buf, start, len) {
       req.body.emit("data", buf.slice(start, len));
     };
 
-    parser.onMessageComplete = function () {
+    parser[hookKeys.MessageComplete] = function () {
       req.body.emit("end");
     };
 
     client.on("data", function (chunk) {
       debugLog('chunk:', chunk.length, JSON.stringify(String(chunk)));
       var ret = parser.execute(chunk, 0, chunk.length);
+      debugLog('chunk ret:', ret);
       // TODO: handle error cases in ret
     });
 
