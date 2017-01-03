@@ -101,21 +101,8 @@ var makeReadableStream = (function guessHow() {
 }());
 
 
-exports.socketHandler = function (app, options) {
-  // Mix the options with the default config.
-  var config = Object.create(defaults), debugLv = options.debug, clientNum = 0;
-  for (var key in options) {
-    config[key] = options[key];
-  }
-
-  return function (client) {
-    var parser = new HTTPParser(HTTPParser.REQUEST);
-    var req;
-    var debugLog = (debugLv
-      ? console.log.bind(console, 'client#', clientNum)
-      : noop);
-    clientNum += 1;
-    debugLog('connection from', client.remoteAddress);
+function makeRespondFunc(state) {
+    var client = state.client, debugLog = (state.debugLog || noop);
 
     function res(statusCode, headers, body) {
       debugLog('res:', arguments);
@@ -206,6 +193,30 @@ exports.socketHandler = function (app, options) {
       debugLog('request done, disconnect');
       return client.end();
     }
+
+  return res;
+}
+exports.makeRespondFunc = makeRespondFunc;
+
+
+exports.socketHandler = function (app, options) {
+  // Mix the options with the default config.
+  var config = Object.create(defaults), debugLv = options.debug, clientNum = 0;
+  for (var key in options) {
+    config[key] = options[key];
+  }
+
+  return function (client) {
+    var parser = new HTTPParser(HTTPParser.REQUEST);
+    var req, res;
+    var debugLog = (debugLv
+      ? console.log.bind(console, 'client#', clientNum)
+      : noop);
+    clientNum += 1;
+    debugLog('connection from', client.remoteAddress);
+
+    res = makeRespondFunc({ client: client, debugLog: debugLog,
+      });
 
     function recvHeaders(a1, a2, a3) {
       // arguments are version-specific,
